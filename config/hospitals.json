@@ -1,0 +1,37 @@
+{
+  "hospitals": {
+    "aiims-bbsr-001": {
+      "hospital_id": "aiims-bbsr-001",
+      "hospital_name": "AIIMS Bhubaneswar",
+      "agent_name": "Asha",
+      "primary_lang": "odia",
+      "fallback_lang": "hindi",
+      "calendar_id": "b9a65cde2d1186797bb8a8020113239711c037c05745685e0cd08938b5daa962@group.calendar.google.com",
+      "credentials_file": "config/avlys_credentials.json",
+      "doctors": [
+        {"id": "dr_das_001", "name": "Dr. Subhash Das", "department": "Cardiology", "calendar_email": "b9a65cde2d1186797bb8a8020113239711c037c05745685e0cd08938b5daa962@group.calendar.google.com"},
+        {"id": "dr_panda_002", "name": "Dr. Priya Panda", "department": "Orthopedics", "calendar_email": "b9a65cde2d1186797bb8a8020113239711c037c05745685e0cd08938b5daa962@group.calendar.google.com"},
+        {"id": "dr_mohanty_003", "name": "Dr. Rajan Mohanty", "department": "General Medicine", "calendar_email": "b9a65cde2d1186797bb8a8020113239711c037c05745685e0cd08938b5daa962@group.calendar.google.com"}
+      ],
+      "working_hours": {"start": "09:00", "end": "17:00"},
+      "timezone": "Asia/Kolkata",
+      "slot_duration_minutes": 30
+    },
+    "apollo-clinic-bbsr-002": {
+      "hospital_id": "apollo-clinic-bbsr-002",
+      "hospital_name": "Apollo Clinic Bhubaneswar",
+      "agent_name": "Priya",
+      "primary_lang": "hindi",
+      "fallback_lang": "english",
+      "calendar_id": "appointments@apollobbsr.iam.gserviceaccount.com",
+      "credentials_file": "config/avlys_credentials.json",
+      "doctors": [
+        {"id": "dr_sharma_001", "name": "Dr. Amit Sharma", "department": "Dermatology", "calendar_email": "dr.sharma@apollobbsr.in"},
+        {"id": "dr_singh_002", "name": "Dr. Kavita Singh", "department": "Gynecology", "calendar_email": "dr.singh@apollobbsr.in"}
+      ],
+      "working_hours": {"start": "10:00", "end": "18:00"},
+      "timezone": "Asia/Kolkata",
+      "slot_duration_minutes": 20
+    }
+  }
+}

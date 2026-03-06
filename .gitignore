@@ -1,0 +1,20 @@
+# ── Secrets (NEVER commit these) ──────────────────────────────
+.env
+config/avlys_credentials.json
+config/*_credentials.json
+config/*_service_account.json
+config/*_key.json
+
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# ── Logs / temp ───────────────────────────────────────────────
+*.log
+*.tmp
