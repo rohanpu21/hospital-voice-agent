@@ -133,7 +133,8 @@ OTHER:
 def run_agent_turn(
     user_message: str,
     conversation_history: list,
-    hospital_config: dict
+    hospital_config: dict,
+    supervisor_note: str | None = None
 ) -> dict:
     """
     Process one turn of conversation.
@@ -169,6 +170,8 @@ def run_agent_turn(
 
     # Build messages
     system_prompt = build_system_prompt(hospital_config)
+    if supervisor_note:
+        system_prompt = f"SUPERVISOR NOTE (act on this immediately): {supervisor_note}\n\n{system_prompt}"
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(conversation_history)
     messages.append({"role": "user", "content": user_message})

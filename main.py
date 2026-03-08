@@ -29,13 +29,17 @@ import pathlib
 from typing import Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Form, Header, Depends
+from fastapi import FastAPI, Request, HTTPException, UploadFile, File, Form, Header, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
 import uvicorn
 
 from services.agent import run_agent_turn
 from services.voice_service import speech_to_text, text_to_speech
 from services.language_engine import detect_language_from_text
+from services.remote_control import (
+    connect_admin, disconnect_admin, broadcast,
+    set_injection, pop_injection, active_admin_count
+)
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -168,6 +172,12 @@ async def call_start(
     }
 
     logger.info(f"[{call_id}] New call for {hospital['hospital_name']} from {caller_phone or 'unknown'}")
+    await broadcast("session_started", call_id, {
+        "hospital_id": hospital_id,
+        "hospital_name": hospital["hospital_name"],
+        "caller_phone": caller_phone,
+        "lang": lang
+    })
 
     # Generate greeting in hospital's primary language
     agent_name = hospital["agent_name"]
@@ -265,11 +275,15 @@ async def call_input(
 
     logger.info(f"[{call_id}] Patient said ({detected_lang}): {patient_text[:80]}")
 
-    # ── Step 3: Run the LLM agent turn ─────────────────────────────────────
+    # ── Step 3: Check for pending supervisor injection ──────────────────────
+    supervisor_note = pop_injection(call_id)
+
+    # ── Step 4: Run the LLM agent turn ─────────────────────────────────────
     result = run_agent_turn(
         user_message=patient_text,
         conversation_history=history,
-        hospital_config=hospital
+        hospital_config=hospital,
+        supervisor_note=supervisor_note
     )
 
     response_text = result["response_text"]
@@ -277,16 +291,29 @@ async def call_input(
 
     logger.info(f"[{call_id}] Agent replied: {response_text[:80]} | booked={appointment_booked}")
 
-    # ── Step 4: Convert response to audio ────────────────────────────────────
+    # ── Step 5: Broadcast transcript update to admin watchers ───────────────
+    await broadcast("transcript_update", call_id, {
+        "patient_said": patient_text,
+        "agent_replied": response_text,
+        "lang": result["detected_lang"],
+        "appointment_booked": appointment_booked,
+        "supervisor_note_used": supervisor_note or None
+    })
+
+    if appointment_booked:
+        await broadcast("appointment_booked", call_id, result.get("booking_result") or {})
+
+    # ── Step 6: Convert response to audio ────────────────────────────────────
     tts_result = text_to_speech(response_text, result["detected_lang"])
 
-    # ── Step 5: Detect end-of-call signals ─────────────────────────────────
+    # ── Step 7: Detect end-of-call signals ─────────────────────────────────
     end_keywords = ["dhanyabad", "shukriya", "thank you", "goodbye", "bye", "ok done", "confirmed"]
     end_call = appointment_booked or any(kw in response_text.lower() for kw in end_keywords)
 
     if end_call and call_id in SESSIONS:
         logger.info(f"[{call_id}] Call ended. Cleaning up session.")
         del SESSIONS[call_id]
+        await broadcast("call_ended", call_id, {"reason": "natural"})
 
     return JSONResponse(content={
         "patient_said": patient_text,
@@ -331,10 +358,13 @@ async def test_chat(request: Request):
 
     session = SESSIONS[call_id]
 
+    supervisor_note = pop_injection(call_id)
+
     result = run_agent_turn(
         user_message=message,
         conversation_history=session["history"],
-        hospital_config=hospital
+        hospital_config=hospital,
+        supervisor_note=supervisor_note
     )
 
     return JSONResponse(content={
@@ -346,6 +376,160 @@ async def test_chat(request: Request):
         "booking_details": result.get("booking_result"),
         "history_length": len(session["history"])
     })
+
+
+# ── Admin / Remote Control ────────────────────────────────────────────────────
+#
+# All admin endpoints require the same AGENT_API_KEY bearer token.
+# WebSocket /admin/ws also requires the key (passed as ?api_key=<key> query param
+# since browsers cannot set custom headers on WebSocket upgrades).
+
+VALID_LANGS = {"od-IN", "hi-IN", "en-IN"}
+
+
+def _require_admin_key(authorization: str = Header(default="")):
+    """Re-use the same bearer-token guard for admin routes."""
+    if AGENT_API_KEY and authorization != f"Bearer {AGENT_API_KEY}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+@app.websocket("/admin/ws")
+async def admin_ws(ws: WebSocket, api_key: str = ""):
+    """
+    Real-time event stream for admin dashboards.
+    Connect with:  ws://host/admin/ws?api_key=<AGENT_API_KEY>
+
+    Events pushed (JSON):
+      session_started, transcript_update, appointment_booked,
+      call_ended, language_changed, supervisor_injected, session_list
+    """
+    if AGENT_API_KEY and api_key != AGENT_API_KEY:
+        await ws.close(code=4001, reason="Unauthorized")
+        return
+
+    await connect_admin(ws)
+
+    # Send current session snapshot immediately on connect
+    sessions_snapshot = {
+        cid: {
+            "hospital_id": s["hospital_id"],
+            "hospital_name": s["hospital"]["hospital_name"],
+            "lang": s["lang"],
+            "caller_phone": s.get("caller_phone", ""),
+            "history_turns": len(s["history"]) // 2
+        }
+        for cid, s in SESSIONS.items()
+    }
+    await broadcast("session_list", "", {"sessions": sessions_snapshot})
+
+    try:
+        while True:
+            # Keep connection alive; admins only receive — they don't send data
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        disconnect_admin(ws)
+
+
+@app.get("/admin/sessions")
+async def admin_list_sessions(_: None = Depends(_require_admin_key)):
+    """List all currently active call sessions."""
+    return {
+        "active_calls": len(SESSIONS),
+        "admin_watchers": active_admin_count(),
+        "sessions": [
+            {
+                "call_id": cid,
+                "hospital_id": s["hospital_id"],
+                "hospital_name": s["hospital"]["hospital_name"],
+                "caller_phone": s.get("caller_phone", ""),
+                "lang": s["lang"],
+                "history_turns": len(s["history"]) // 2
+            }
+            for cid, s in SESSIONS.items()
+        ]
+    }
+
+
+@app.get("/admin/sessions/{call_id}")
+async def admin_get_session(call_id: str, _: None = Depends(_require_admin_key)):
+    """Get the full transcript and state of a specific call."""
+    session = SESSIONS.get(call_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {
+        "call_id": call_id,
+        "hospital_id": session["hospital_id"],
+        "hospital_name": session["hospital"]["hospital_name"],
+        "caller_phone": session.get("caller_phone", ""),
+        "lang": session["lang"],
+        "history": session["history"]
+    }
+
+
+@app.post("/admin/sessions/{call_id}/inject")
+async def admin_inject(call_id: str, request: Request, _: None = Depends(_require_admin_key)):
+    """
+    Inject a supervisor note into the next agent turn for a live call.
+
+    Body: { "note": "The patient is a VIP — offer earliest slot." }
+
+    The note is prepended to the LLM system prompt on the very next patient turn,
+    then discarded. Use this to guide the agent mid-call without hanging up.
+    """
+    if call_id not in SESSIONS:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    body = await request.json()
+    note = body.get("note", "").strip()
+    if not note:
+        raise HTTPException(status_code=422, detail="'note' field is required and cannot be empty")
+
+    set_injection(call_id, note)
+    await broadcast("supervisor_injected", call_id, {"note": note})
+    logger.info(f"[{call_id}] Supervisor injected: {note[:120]}")
+
+    return {"status": "queued", "call_id": call_id, "note": note}
+
+
+@app.delete("/admin/sessions/{call_id}")
+async def admin_terminate_session(call_id: str, _: None = Depends(_require_admin_key)):
+    """
+    Force-terminate an active call session.
+    The telephony provider will detect end_call=true on the next /call/input response
+    (which the agent will now return immediately) or this can be used for cleanup.
+    """
+    session = SESSIONS.pop(call_id, None)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    await broadcast("call_ended", call_id, {"reason": "admin_terminated"})
+    logger.info(f"[{call_id}] Session force-terminated by admin.")
+
+    return {"status": "terminated", "call_id": call_id}
+
+
+@app.post("/admin/sessions/{call_id}/set-lang")
+async def admin_set_language(call_id: str, request: Request, _: None = Depends(_require_admin_key)):
+    """
+    Override the TTS/STT language for a live call.
+
+    Body: { "lang": "hi-IN" }   # od-IN | hi-IN | en-IN
+    """
+    session = SESSIONS.get(call_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    body = await request.json()
+    lang = body.get("lang", "").strip()
+    if lang not in VALID_LANGS:
+        raise HTTPException(status_code=422, detail=f"'lang' must be one of {sorted(VALID_LANGS)}")
+
+    old_lang = session["lang"]
+    session["lang"] = lang
+    await broadcast("language_changed", call_id, {"from": old_lang, "to": lang})
+    logger.info(f"[{call_id}] Language changed {old_lang} → {lang} by admin.")
+
+    return {"status": "updated", "call_id": call_id, "lang": lang}
 
 
 # ── Entry Point ───────────────────────────────────────────────────────────────
