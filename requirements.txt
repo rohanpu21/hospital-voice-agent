@@ -17,3 +17,6 @@ requests==2.32.3
 
 # Utilities
 python-dotenv==1.0.1
+
+# Ngrok tunnel (auto-expose localhost for telephony webhooks)
+pyngrok==7.2.2

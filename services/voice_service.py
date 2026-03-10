@@ -31,13 +31,14 @@ STT_LANGUAGE_MAP = {
 }
 
 
-def speech_to_text(audio_bytes: bytes, language_code: str = "hi-IN") -> dict:
+def speech_to_text(audio_bytes: bytes, language_code: str = "hi-IN", audio_format: str = "wav") -> dict:
     """
     Convert audio bytes to text using Sarvam STT.
 
     Args:
-        audio_bytes: Raw audio bytes (WAV format, 16kHz, mono preferred)
+        audio_bytes: Raw audio bytes (WAV or MP3 — Exotel sends MP3)
         language_code: 'hi-IN', 'od-IN', or 'en-IN'
+        audio_format: 'wav' or 'mp3' (auto-detected from Exotel recording URL)
 
     Returns:
         {"transcript": "...", "language": "hi-IN", "success": True}
@@ -45,24 +46,13 @@ def speech_to_text(audio_bytes: bytes, language_code: str = "hi-IN") -> dict:
     if not SARVAM_KEY:
         return {"transcript": "", "success": False, "error": "SARVAM_API_KEY not set"}
 
-    # Sarvam expects base64-encoded audio or multipart file upload
-    audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+    # Set correct MIME type for the audio format
+    mime_types = {"wav": "audio/wav", "mp3": "audio/mpeg", "ogg": "audio/ogg"}
+    mime = mime_types.get(audio_format, "audio/wav")
+    ext = audio_format if audio_format in mime_types else "wav"
 
-    payload = {
-        "model": "saaras:v1",          # Sarvam's best STT model for Indian accents
-        "language_code": language_code,
-        "with_timestamps": False,
-        "with_disfluencies": False
-    }
-
-    headers = {
-        "api-subscription-key": SARVAM_KEY,
-        "Content-Type": "application/json"
-    }
-
-    # Sarvam speech-to-text endpoint (file upload)
     files = {
-        "file": ("audio.wav", audio_bytes, "audio/wav"),
+        "file": (f"audio.{ext}", audio_bytes, mime),
         "model": (None, "saaras:v1"),
         "language_code": (None, language_code)
     }
@@ -72,7 +62,7 @@ def speech_to_text(audio_bytes: bytes, language_code: str = "hi-IN") -> dict:
             f"{SARVAM_BASE_URL}/speech-to-text",
             files=files,
             headers={"api-subscription-key": SARVAM_KEY},
-            timeout=10
+            timeout=15
         )
         response.raise_for_status()
         data = response.json()

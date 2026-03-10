@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install pyngrok==7.2.2)",
+      "Bash(timeout 20 python main.py)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(python -m json.tool)",
+      "Bash(tasklist)",
+      "WebFetch(domain:developer.exotel.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:support.exotel.com)",
+      "WebFetch(domain:exotel.com)"
+    ]
+  }
+}
